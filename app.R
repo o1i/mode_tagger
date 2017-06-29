@@ -142,13 +142,14 @@ server <- function(input, output) {
                Time = gsub("^([0-9]*:[0-9]*:[0-9]*):([0-9]*).*$", "\\1.\\2", paste0(Time, ":000")),
                ts = as.POSIXct(paste(Date, Time), format = "%d/%m/%Y %H:%M:%OS"),
                id = as.character(row_number()),
-               flag_mode = "unk") %>%
+               flag_mode_gps = "unk") %>%
         arrange(ts) %>%
         select(-c(Date, Time))
       rownames(values$gps_data) <- values$gps_data$id
       values$focus_time <- min(values$gps_data$ts, na.rm = TRUE)
       values$time_window <- 60*5
-      values$click_id <- 1
+      values$click_id_imu <- 1
+      values$click_id_gps <- 1
       print("GPS Data Loaded")
     }
   })
@@ -162,13 +163,20 @@ server <- function(input, output) {
         mutate(Time = gsub("^([0-9]*:[0-9]*:[0-9]*):([0-9]*).*$", "\\1.\\2", paste0(Time, ":000")),
                ts = as.POSIXct(paste(Date, Time), format = "%d/%m/%Y %H:%M:%OS"),
                id = as.character(row_number()),
-               acc_tot = sqrt(Acc_X.mg.^2 + Acc_Y.mg.^2 + Acc_Z.mg.^2)) %>%
+               acc_tot = sqrt(Acc_X.mg.^2 + Acc_Y.mg.^2 + Acc_Z.mg.^2),
+               flag_mode_imu = "unk") %>%
         arrange(ts) %>%
         select(-c(Date, Time))
       rownames(values$imu_data) <- values$imu_data$id
       print("IMU Data Loaded")
     }
   })
+
+  # values$out_data <- reactive(
+  #   gps_data[pmin(nrow(values$gps_data)) %>%
+  #   pmin(1) %>%
+  #   as.list() %>%
+  #   do.call(what = `:`), ])
 
    output$map <- renderLeaflet({
      print("Printing map")
@@ -181,12 +189,19 @@ server <- function(input, output) {
      print(paste0("Map contains ", nrow(values$out_data), " Points."))
      point_cols <- get_point_colour(values$out_data)
      line_cols <- get_line_colour(values$out_data$flag_mode, mode_cols)
+     print(paste("IMU time:", values$imu_data[values$click_id_imu, "ts"]))
+     print(paste("GPS time:", values$out_data[values$click_id_gps, "ts"]))
+     print(paste("diff:", abs(as.numeric(values$out_data[values$click_id_gps, "ts"]) -
+                                as.numeric(values$imu_data[values$click_id_imu, "ts"]))))
+     print(paste("Condition: ", (abs(as.numeric(values$out_data[values$click_id_gps, "ts"]) -
+                                       as.numeric(values$imu_data[values$click_id_imu, "ts"])) < 3 )))
      if(abs(as.numeric(values$out_data[values$click_id_gps, "ts"]) -
             as.numeric(values$imu_data[values$click_id_imu, "ts"])) < 3 ){
        highlight_ind <- which(values$out_data$id == values$click_id_gps)
      }else{
        highlight_ind <- findInterval(values$imu_data[values$click_id_imu, "ts"],
-                                     values$out_data)
+                                     values$out_data$ts)
+       print(paste("GPS map-interval:", highlight_ind))
      }
 
      leaflet() %>% addTiles() %>%
@@ -236,7 +251,6 @@ server <- function(input, output) {
             y = imu_used$acc_tot)
      abline(h = 1000)
      abline(v = values$imu_data[values$click_id_imu, "ts"])
-     print(paste("Set acc overview abline at:", values$imu_data[values$click_id_imu, "ts"]))
    })
 
    output$speed_overview <- renderPlot({
@@ -283,9 +297,12 @@ server <- function(input, output) {
    })
 
    observeEvent(input$set_label, { # Button setting labels
-     values$gps_data$flag_mode <- insert_value(values$gps_data$flag_mode,
-                                               as.numeric(values$click_id),
+     values$gps_data$flag_mode_gps <- insert_value(values$gps_data$flag_mode_gps,
+                                               as.numeric(values$click_id_gps),
                                                input$mode_select)
+     values$imu_data$flag_mode_imu <- insert_value(values$imu_data$flag_mode_imu,
+                                                  as.numeric(values$click_id_imu),
+                                                  input$mode_select)
    })
 
    observeEvent(input$overview_hover, { # Hover over the overview plot
@@ -298,13 +315,13 @@ server <- function(input, output) {
 
    observeEvent(input$acc_overview_click, { # Click in the acc overview plot: set highlight
      values$click_id_gps <- values$out_data$id[which.min((input$acc_overview_click$x - as.numeric(values$out_data$ts))^2)]
-     values$click_id_imu <- values$imu_data[findInterval(input$acc_overview_click$x, values$imu_data$ts)[1], "ts"]
+     values$click_id_imu <- values$imu_data[findInterval(input$acc_overview_click$x, values$imu_data$ts)[1], "id"]
      print(paste("Click ids IMU/GPS:", values$click_id_imu, values$click_id_gps))
    })
 
    observeEvent(input$speed_overview_click, { # Click in the speed overview plot: set highlight
      values$click_id_gps <- values$out_data$id[which.min((input$speed_overview_click$x - as.numeric(values$out_data$ts))^2)]
-     values$click_id_imu <- values$imu_data[findInterval(input$speed_overview_click$x, values$imu_data$ts)[1], "ts"]
+     values$click_id_imu <- values$imu_data[findInterval(input$speed_overview_click$x, values$imu_data$ts)[1], "id"]
      print(paste("Click ids IMU/GPS:", values$click_id_imu, values$click_id_gps))
    })
 
