@@ -12,62 +12,32 @@ library(leaflet)
 library(dplyr)
 library(stringr)
 library(RColorBrewer)
+library(Rcpp)
+library(tidyr)
+library(sp)
+options(digits = 12)
+options(digits.secs = 3)
 
-source("multicolored_polyline.R")
+source("utils.R")
 Sys.setenv(TZ='GMT')
-
-get_point_colour <- function(df){
-  # Gets the colors of the GPS points to be displayed
-  c <- c("#3333DD", "#999999")
-  ind <- as.numeric(df$flag_interpol) * 2 + as.numeric(!df$flag_interpol)
-
-  a <- as.numeric(!df$flag_interpol) / 0.9 + 0.2
-  return(list(c = c[ind], a = a))
-}
-
-get_line_colour <- function(v, cols){
-  # gets colours based on modes of transport.
-  # Colors and modes are hard coded here
-  return(as.character(unlist(cols[v])))
-}
-
-options(shiny.maxRequestSize=1000*1024^2) #  Max size of input files
-
-insert_value <- function(v, ind, val){
-  # Inserts a new value into a vector v at a position and before
-  #
-  # Inputs:
-  #   v   The vector to be altered
-  #   ind The last position to be changed (ony same values)
-  #   val The new value to insert
-  #
-  # Output: the corrected vector v
-  first <- v[1:ind] %>%
-    rev() %>%
-    `!=`(v[ind]) %>%
-    c(TRUE) %>%         # For the case if we are in the first segment
-    which.max()
-  v_out <- v
-  v_out[(ind - first + 2):ind] <- val
-  return(v_out)
-}
 
 # Different modes
 modes <- list("Unknown" = "unk",
-              "Active movement" = "mv_a",
-              "Passive movement" = "mv_p",
-              "Active stationary" = "st_a",
-              "Passive stationary" = "st_p",
+              "Indoors" = "indo",
+              "Walking" = "walk",
+              "Bike" = "bike",
+              "Car" = "car",
+              "Bus" = "bus",
+              "Tram" = "tram",
+              "Train" = "train",
+              "Motorbike" = "moto",
+              "Ship" = "ship",
+              "Transfer" = "trans",
+              "Other" = "other",
               "Remove" = "rm")
 
-mode_col_palette <- c("#777777", brewer.pal(4, "Paired"), "#FF0000")
-mode_cols <- list(unk = "#999999",
-             mv_a = mode_col_palette[1],
-             mv_p = mode_col_palette[2],
-             st_a = mode_col_palette[3],
-             st_p = mode_col_palette[4],
-             rm = mode_col_palette[length(mode_col_palette)])
-
+mode_col_palette <- c("#777777", brewer.pal(8, "Dark2"), "#f03b20", "#7a0177", "#08519c", "#FF0000")
+mode_cols <- setNames(as.list(mode_col_palette), as.character(unlist(modes)))
 
 # Define UI for application that draws a histogram
 ui <- fluidPage(
@@ -92,6 +62,7 @@ ui <- fluidPage(
       actionButton("zoom_in", "Zoom In"),
       actionButton("zoom_out", "Zoom Out"),
       actionButton("center", "Center"),
+      actionButton("remove", "Remove rest"),
       hr(),
       selectInput(
         'mode_select', 'Select Mode', choices = modes,
@@ -99,14 +70,13 @@ ui <- fluidPage(
       ),
       actionButton("set_label", "Apply label"),
       hr(),
-      textInput("text", label = ("Filename of output"), value = "flagged_data"),
-      downloadButton('download', 'Download')
+      downloadButton('download', 'Download Labelled data')
       ),  # End of sidebar panel
       # Show a plot of the generated distribution
       mainPanel(
         # textOutput("str"),
         plotOutput("overview", width = "800px", height = "150px",
-                   click = "overview_click", hover = "overview_hover"),
+                   click = "overview_click"),
         leafletOutput("map"),
         plotOutput("speed_overview", width = "800px", height = "150px",
                    click = "speed_overview_click"),
@@ -121,7 +91,8 @@ server <- function(input, output) {
 
   values <- reactiveValues()
 
-  observeEvent(input$gpsfile, {
+  # --- Reading Data Events ----------------------------------------------------
+  observeEvent(input$gpsfile, { # GPS Data
     if(!is.null(input$gpsfile)){
       print("Loading GPS Data")
       values$gps_data <- read.csv(input$gpsfile$datapath, header = T, sep = ",",
@@ -154,7 +125,7 @@ server <- function(input, output) {
     }
   })
 
-  observeEvent(input$imufile, {
+  observeEvent(input$imufile, { # IMU Data
     if(!is.null(input$imufile)){
       print("Loading IMU Data")
       values$imu_data <- read.csv(input$imufile$datapath, header = T, sep = ",",
@@ -168,79 +139,111 @@ server <- function(input, output) {
         arrange(ts) %>%
         select(-c(Date, Time))
       rownames(values$imu_data) <- values$imu_data$id
+      dt <- diff(values$imu_data$ts, units = "secs")
+      ind_isolated <- c(TRUE, dt > 5) & c(dt > 5, TRUE)
+      values$imu_data <- values$imu_data[!ind_isolated, ]
       print("IMU Data Loaded")
     }
   })
 
-  # values$out_data <- reactive(
-  #   gps_data[pmin(nrow(values$gps_data)) %>%
-  #   pmin(1) %>%
-  #   as.list() %>%
-  #   do.call(what = `:`), ])
+  observeEvent({ # Out dataset (plotted on map)
+    values$time_window
+    values$focus_time
+  }, {
+    values$out_data <- values$gps_data[
+      (values$focus_time + values$time_window * c(-1, 1)) %>%
+        findInterval(values$gps_data$ts) %>%
+        `+`(c(-1, 1)) %>%
+        pmax(1) %>%
+        pmin(nrow(values$gps_data)) %>%
+        as.list() %>%
+        do.call(what = `:`), ]
+  })
 
-   output$map <- renderLeaflet({
-     print("Printing map")
-     inds <- pmax(1, pmin(nrow(values$gps_data),
-                          findInterval(as.numeric(values$focus_time) +
-                                         c(-values$time_window,
-                                           values$time_window),
-                                       values$gps_data$ts) + c(-1, 1)))
-     values$out_data <- values$gps_data[inds[1]:inds[2], ]
-     print(paste0("Map contains ", nrow(values$out_data), " Points."))
-     point_cols <- get_point_colour(values$out_data)
-     line_cols <- get_line_colour(values$out_data$flag_mode, mode_cols)
-     print(paste("IMU time:", values$imu_data[values$click_id_imu, "ts"]))
-     print(paste("GPS time:", values$out_data[values$click_id_gps, "ts"]))
-     print(paste("diff:", abs(as.numeric(values$out_data[values$click_id_gps, "ts"]) -
-                                as.numeric(values$imu_data[values$click_id_imu, "ts"]))))
-     print(paste("Condition: ", (abs(as.numeric(values$out_data[values$click_id_gps, "ts"]) -
-                                       as.numeric(values$imu_data[values$click_id_imu, "ts"])) < 3 )))
-     if(abs(as.numeric(values$out_data[values$click_id_gps, "ts"]) -
-            as.numeric(values$imu_data[values$click_id_imu, "ts"])) < 3 ){
-       highlight_ind <- which(values$out_data$id == values$click_id_gps)
-     }else{
-       highlight_ind <- findInterval(values$imu_data[values$click_id_imu, "ts"],
-                                     values$out_data$ts)
-       print(paste("GPS map-interval:", highlight_ind))
-     }
+  observeEvent(values$out_data, { # Adjust GPS clicked time point if necessary
+    if(!values$click_id_gps %in% values$out_data){
+      ids <- as.numeric(values$out_data$id)
+      values$click_id_gps <- as.numeric(values$click_id_gps) %>%
+        pmin(max(ids)) %>%
+        pmax(min(ids)) %>%
+        as.character()
+    }
+  })
 
-     leaflet() %>% addTiles() %>%
-       addCircleMarkers(lng = values$out_data$Longitude,
-                        lat = values$out_data$Latitude,
-                        layerId = values$out_data$id,
-                        color = point_cols$c, opacity = point_cols$a) %>%
-       mcpl(lon = values$out_data$Longitude, lat = values$out_data$Latitude,
-            col = line_cols) %>%
-       addCircleMarkers(lng = values$out_data$Longitude[highlight_ind],
-                        lat = values$out_data$Latitude[highlight_ind],
-                        color = "#CC0000")
-
-   })
-
-   output$overview <- renderPlot({
+  # --- Producing output -------------------------------------------------------
+  output$overview <- renderPlot({ # Overall overview
      par(mar = c(2.5, 8.1, 1, 2.1))
-     inds <- seq(1, nrow(values$gps_data), by = 15)
-     if(sum(values$gps_data$flag_mode == "unk") < 3600){
-       inds <- c(inds, which(values$gps_data$flag_mode == "unk"))
+     inds <- seq(1, nrow(values$imu_data), by = 1000)
+     if(sum(values$imu_data$flag_mode_imu == "unk") < 20000){
+       inds <- c(inds, which(values$imu_data$flag_mode_imu == "unk"))
      }
-     plot(NULL, xlim = range(values$gps_data$ts), ylim = c(1, length(modes)),
+     plot(NULL, xlim = range(values$imu_data$ts), ylim = c(1, length(modes)),
           ylab = "", bty = "n", xaxt = 'n', yaxt = 'n')
-     xlabels <- seq(min(values$gps_data$ts), max(values$gps_data$ts), l = 4)
-     axis(1, at = xlabels, labels = strftime(xlabels, format = "%H:%M:%S", tz = "CET"))
+     if(length(values$gps_gap_starts) > 1){
+       rect(values$gps_gap_starts, -1,
+            values$gps_gap_ends, length(modes) + 2,
+            col = rgb(1, 0, 0, 0.3), border = NA)
+     }
+     xlabels <- seq(min(values$gps_data$ts), max(values$gps_data$ts), l = 6)
+     axis(1, at = xlabels, labels = strftime(xlabels, format = "%H:%M", tz = "CET"))
      axis(2, at = 1:length(modes), labels = names(modes), las = 1, tick = FALSE)
-     rect(min(values$out_data$ts), -1, max(values$out_data$ts), 100, col = "#AAAAAA")
-     points(x = values$gps_data$ts[inds],
-            y = as.numeric(factor(values$gps_data$flag_mode[inds],
+
+     rect(values$focus_time - values$time_window, -1,
+          values$focus_time + values$time_window, 100,
+          col = "#AAAAAA", border = NA)
+     abline(v = range(values$out_data$ts))
+
+     points(x = values$imu_data$ts[inds],
+            y = as.numeric(factor(values$imu_data$flag_mode_imu[inds],
                                   levels = as.character(unlist(modes)))),
-            col = mode_col_palette[as.numeric(factor(values$gps_data$flag_mode[inds],
+            col = mode_col_palette[as.numeric(factor(values$imu_data$flag_mode_imu[inds],
                                               levels = as.character(unlist(modes))))])
      abline(v = values$overview_hover_x)
    })
 
-   output$acc_overview <- renderPlot({
+  output$map <- renderLeaflet({ # Map
+    print("Printing map")
+    print(paste0("Map contains ", nrow(values$out_data), " Points."))
+    point_cols <- get_point_colour(values$out_data)
+    line_cols <- get_line_colour(values$out_data$flag_mode_gps, mode_cols)
+    print(paste("IMU time:", values$imu_data[values$click_id_imu, "ts"]))
+    print(paste("GPS time:", values$out_data[values$click_id_gps, "ts"]))
+    print(paste("diff:", abs(as.numeric(values$out_data[values$click_id_gps, "ts"]) -
+                               as.numeric(values$imu_data[values$click_id_imu, "ts"]))))
+    print(paste("Condition: ", (abs(as.numeric(values$out_data[values$click_id_gps, "ts"]) -
+                                      as.numeric(values$imu_data[values$click_id_imu, "ts"])) < 3 )))
+    if(abs(as.numeric(values$out_data[values$click_id_gps, "ts"]) -
+           as.numeric(values$imu_data[values$click_id_imu, "ts"])) < 3 ){
+      highlight_ind <- which(values$out_data$id == values$click_id_gps)
+    }else{
+      highlight_ind <- findInterval(values$imu_data[values$click_id_imu, "ts"],
+                                    values$out_data$ts)
+      print(paste("GPS map-interval:", highlight_ind))
+    }
+    print("---------- Length comparison:")
+    print(length(values$out_data$flag_mode_gps))
+    print(length(line_cols))
+    print(length(values$out_data$Longitude))
+    leaflet(options=leafletOptions(minZoom=13, maxZoom=18)) %>% addTiles() %>%
+      addCircleMarkers(lng = values$out_data$Longitude,
+                       lat = values$out_data$Latitude,
+                       layerId = values$out_data$id,
+                       color = point_cols$c,
+                       opacity = point_cols$a) %>%
+      mcpl(lon = values$out_data$Longitude, lat = values$out_data$Latitude,
+           col = line_cols) %>%
+      addCircleMarkers(lng = values$out_data$Longitude[highlight_ind],
+                       lat = values$out_data$Latitude[highlight_ind],
+                       color = "#CC0000")
+
+  })
+
+   output$acc_overview <- renderPlot({ # Acceleration
      par(mar = c(2.5, 8.1, 2.5, 2.1))
-     imu_used <- subset(values$imu_data, values$imu_data$ts > min(values$out_data$ts) &
-                          values$imu_data$ts < max(values$out_data$ts))
+     imu_used <- subset(values$imu_data,
+                        abs(as.numeric(values$imu_data$ts -
+                                         values$focus_time,
+                                       units = "secs")) < values$time_window)
      imu_used <- imu_used[unique(floor(seq(1, nrow(imu_used), l = 2000))), ]
 
      plot(NULL, xlim = range(imu_used$ts), ylim = c(200, 1800),
@@ -248,28 +251,69 @@ server <- function(input, output) {
      xlabels <- seq(min(imu_used$ts), max(imu_used$ts), l = 4)
      axis(1, at = xlabels, labels = strftime(xlabels, format = "%H:%M:%S", tz = "CET"))
      lines(x = imu_used$ts,
-            y = imu_used$acc_tot)
+           y = imu_used$acc_tot)
+     points(x = imu_used$ts,
+            y = imu_used$acc_tot,
+            pch = 16, cex = 0.6, col = get_line_colour(imu_used$flag_mode_imu, mode_cols))
      abline(h = 1000)
      abline(v = values$imu_data[values$click_id_imu, "ts"])
    })
 
-   output$speed_overview <- renderPlot({
+   output$speed_overview <- renderPlot({ # Speed
      par(mar = c(2.5, 8.1, 2.5, 2.1))
      plot(NULL, xlim = range(values$out_data$ts), ylim = range(0, 150),
           ylab = "", bty = "n", xaxt = 'n', yaxt = 'n', main = "Speed")
      xlabels <- seq(min(values$out_data$ts), max(values$out_data$ts), l = 4)
      axis(1, at = xlabels, labels = strftime(xlabels, format = "%H:%M:%S", tz = "CET"))
+     axis(2, at = c(4.5, 30, 50, 80, 100), tick = F)
      abline(h = c(4.5, 30, 50, 80, 100), col = "#AAAAAA")
      lines(x = pmax(0, values$out_data$ts),
            y = values$out_data$Speed)
+     points(x = pmax(0, values$out_data$ts),
+           y = values$out_data$Speed,
+           pch = 16, cex = 0.6, col = unlist(mode_cols[values$out_data$flag_mode_gps]))
      abline(v = values$imu_data[values$click_id_imu, "ts"])
      print(head(values$out_data, 3))
    })
 
+
+   # --- Events ----------------------------------------------------------------
+   observeEvent({ # Determine the gaps
+     values$gps_data
+     values$imu_data
+   }, {
+     print("Potentially listening to GPS gap events")
+     print(values$imu_data$ts[1])
+     print(values$gps_data$ts[1])
+     print(abs(as.numeric(values$imu_data$ts[1] - values$gps_data$ts[1], units = "secs")))
+     if(!is.null(values$gps_data) & !is.null(values$imu_data)){
+       print("Really determining GPS gaps")
+       if(abs(as.numeric(values$imu_data$ts[1] - values$gps_data$ts[1], units = "secs")) > 5){
+         starts <- values$imu_data$ts[1]
+         ends <- values$gps_data$ts[1]
+       }else{
+         starts <- numeric(0)
+         ends <- numeric(0)
+       }
+       midgaps <- which(diff(as.numeric(values$gps_data$ts, units = "secs")) > 5)
+       if(length(midgaps) > 0){
+         starts <- c(starts, values$gps_data$ts[midgaps])
+         ends <- c(ends, values$gps_data$ts[midgaps + 1])
+       }
+       if(abs(as.numeric(values$imu_data$ts[nrow(values$imu_data)] - values$gps_data$ts[nrow(values$gps_data)])) > 5){
+         starts <- c(starts, values$gps_data$ts[nrow(values$gps_data)])
+         ends <- c(ends, values$imu_data$ts[nrow(values$imu_data)])
+       }
+      values$gps_gap_starts <- starts
+      values$gps_gap_ends <- ends
+     }
+   })
+
+
    observeEvent(input$map_marker_click, {#Observer to show Popups on click
      click <- input$map_marker_click
      if (!is.null(click)) {
-       time_pressed <- values$out_data[click$id, ts]
+       time_pressed <- values$out_data[click$id, "ts"]
        values$click_id_imu <- values$imu_data[findInterval(time_pressed, values$imu_data$ts)[1], "id"]
        values$click_id_gps <- click$id
        print(paste("Click id:", values$click_id_imu))
@@ -305,12 +349,13 @@ server <- function(input, output) {
                                                   input$mode_select)
    })
 
-   observeEvent(input$overview_hover, { # Hover over the overview plot
-     values$overview_hover_x <- values$gps_data$ts[which.min((input$overview_hover$x - as.numeric(values$gps_data$ts))^2)]
+   observeEvent(input$remove, { # Remove rest button
+     values$imu_data$flag_mode_imu[values$imu_data$flag_mode_imu == "unk"] <- "rm"
+     values$gps_data$flag_mode_gps[values$gps_data$flag_mode_gps == "unk"] <- "rm"
    })
 
    observeEvent(input$overview_click, { # Click in the overview plot: set focus
-     values$focus_time <- values$gps_data$ts[which.min((input$overview_click$x - as.numeric(values$gps_data$ts))^2)]
+     values$focus_time <- values$imu_data$ts[which.min((input$overview_click$x - as.numeric(values$imu_data$ts))^2)]
    })
 
    observeEvent(input$acc_overview_click, { # Click in the acc overview plot: set highlight
@@ -325,12 +370,13 @@ server <- function(input, output) {
      print(paste("Click ids IMU/GPS:", values$click_id_imu, values$click_id_gps))
    })
 
-   output$download <- downloadHandler(
+   output$download <- downloadHandler( # Download button
      filename = function() {
-       paste0(input$output_name, '.csv')
+       paste0('dummy.csv')
      },
      content = function(file) {
-       write.csv(values$gps_data, file, rownames = FALSE)
+       stopifnot(all(values$imu_data$flag_mode_imu != "unk"))
+       write.csv(merge_sources(values$gps_data, values$imu_data), file, row.names = FALSE)
      }
    )
 
