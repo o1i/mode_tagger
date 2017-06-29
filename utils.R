@@ -70,31 +70,36 @@ insert_value <- function(v, ind, val){
 
 cppFunction('
             NumericVector match_inds(NumericVector t1, NumericVector t2){
-            /*Find closest elements to elements of t2 in t1. Assume both are sorted ascendingly*/
-            int n1 = t1.size();
-            int n2 = t2.size();
-            int j = 0;
-            NumericVector out(n2);
+              /*Find closest elements to elements of t2 in t1. Assume both are sorted ascendingly*/
+              int n1 = t1.size();
+              int n2 = t2.size();
+              int j = 0;
+              NumericVector out(n2);
 
-            for(int i = 0; i<n2; ++i) {
-            if(t1[j] > t2[i]){
-            out[i] = j + 1;
-            }else{
-            if(pow(t1[j] - t2[i], 2) < pow(t1[j + 1] - t2[i], 2)){
-            out[i] = j + 1;
-            } else{
-            j += 1;
-            j = std::min(j, n1 - 1);
-            i -= 1;
-            }
-            }
-            }
-            return out;
+              for(int i = 0; i<n2; ++i) {
+                if(t1[j] >= t2[i]){
+                out[i] = j + 1;
+              }else{
+                if(pow(t1[j] - t2[i], 2) <= pow(t1[j + 1] - t2[i], 2)){
+                  out[i] = j + 1;
+                } else{
+                  j += 1;
+                  i -=1;
+                  if(j >= (n1 - 1)){
+                    i +=1;
+                    out[i] = n1;
+                  }
+              }
+              }
+              }
+              return out;
             }
             ')
 
 merge_sources <- function(gps, imu){
   print("Merging sources")
+  print(paste("GPS has", nrow(gps), "rows"))
+  print(paste("IMU has", nrow(imu), "rows"))
   print(head(imu, 2))
   imu <- imu %>%
     filter(flag_mode_imu != "rm") %>%
@@ -108,11 +113,18 @@ merge_sources <- function(gps, imu){
            HDOP = NA,
            Speed = NA,
            flag_interpol = NA)
+  print(str(as.numeric(imu$ts)))
+  print(str(as.numeric(gps$ts)))
+  save(imu, file = "imu.rda")
+  save(gps, file = "gps.rda")
   print("Getting Matches")
   matches <- match_inds(as.numeric(imu$ts), as.numeric(gps$ts))
+  print("Got Matches")
+  print(head(matches))
+  print(str(matches))
 
   # Matches further than a second from any IMU signal should be discarded
-  keep <- abs(as.numeric(imu$ts - gps$ts, units = "secs")) < 1
+  keep <- abs(as.numeric(imu$ts[matches] - gps$ts, units = "secs")) < 1
   gps <- gps[keep, ]
   matches <- matches[keep]
 

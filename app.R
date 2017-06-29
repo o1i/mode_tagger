@@ -56,6 +56,10 @@ ui <- fluidPage(
                 accept=c('text/csv',
                          'text/comma-separated-values,text/plain',
                          '.csv')),
+      fileInput('labelfile', 'Choose Labelled File (optional)',
+                accept=c('text/csv',
+                         'text/comma-separated-values,text/plain',
+                         '.csv')),
       hr(),
       actionButton("shift_f", "Move Ahead"),
       actionButton("shift_b", "Move Back"),
@@ -68,7 +72,6 @@ ui <- fluidPage(
         'mode_select', 'Select Mode', choices = modes,
         selectize = FALSE
       ),
-      actionButton("set_label", "Apply label"),
       hr(),
       downloadButton('download', 'Download Labelled data')
       ),  # End of sidebar panel
@@ -146,9 +149,23 @@ server <- function(input, output) {
     }
   })
 
+  observeEvent(input$labelfile, { # Labelled data
+    if(!is.null(input$labelfile)){
+      print("Loading Labelled Data")
+      values$labelled_data <- read.csv(input$labelfile$datapath, header = T, sep = ",",
+                                  dec = ".", strip.white = TRUE,
+                                  stringsAsFactors = FALSE) %>%
+        arrange(ts) %>%
+        select(ts, flag_mode_imu) %>%
+        mutate(ts = as.POSIXct(ts, format = "%Y-%m-%d %H:%M:%OS"))
+      print("Labelled Data Loaded")
+    }
+  })
+
   observeEvent({ # Out dataset (plotted on map)
     values$time_window
     values$focus_time
+    values$gps_data
   }, {
     values$out_data <- values$gps_data[
       (values$focus_time + values$time_window * c(-1, 1)) %>%
@@ -220,10 +237,6 @@ server <- function(input, output) {
                                     values$out_data$ts)
       print(paste("GPS map-interval:", highlight_ind))
     }
-    print("---------- Length comparison:")
-    print(length(values$out_data$flag_mode_gps))
-    print(length(line_cols))
-    print(length(values$out_data$Longitude))
     leaflet(options=leafletOptions(minZoom=13, maxZoom=18)) %>% addTiles() %>%
       addCircleMarkers(lng = values$out_data$Longitude,
                        lat = values$out_data$Latitude,
@@ -273,7 +286,6 @@ server <- function(input, output) {
            y = values$out_data$Speed,
            pch = 16, cex = 0.6, col = unlist(mode_cols[values$out_data$flag_mode_gps]))
      abline(v = values$imu_data[values$click_id_imu, "ts"])
-     print(head(values$out_data, 3))
    })
 
 
@@ -309,8 +321,28 @@ server <- function(input, output) {
      }
    })
 
+   observeEvent({  # Auto-Label data
+     values$labelled_data
+     values$imu_data
+     values$gps_data
+     }, {
+     if(!is.null(values$labelled_data) & !is.null(values$imu_data) & !is.null(values$gps_data)){
+       n <- nrow(values$labelled_data)
+       breaks <- which(values$labelled_data$flag_mode_imu[-1] != values$labelled_data$flag_mode_imu[-n] |
+         as.numeric(values$labelled_data$ts[-1] - values$labelled_data$ts[-n], units = "secs") > 10)
+       starts <- values$labelled_data$ts[c(1, breaks + 1)]
+       ends <- values$labelled_data$ts[c(breaks, n)]
+       labels <- values$labelled_data$flag_mode_imu[c(1, breaks + 1)]
 
-   observeEvent(input$map_marker_click, {#Observer to show Popups on click
+       sapply(1:length(labels), function(i){
+         new_inds <- values$imu_data$ts >= starts[i] & values$imu_data$ts < ends[i]
+         values$imu_data$flag_mode_imu[new_inds] <- labels[i]
+       })
+     }
+   })
+
+
+   observeEvent(input$map_marker_click, {  # Observer to show Popups on click
      click <- input$map_marker_click
      if (!is.null(click)) {
        time_pressed <- values$out_data[click$id, "ts"]
@@ -340,13 +372,19 @@ server <- function(input, output) {
      values$focus_time <- values$imu_data[values$click_id_imu, "ts"]
    })
 
-   observeEvent(input$set_label, { # Button setting labels
-     values$gps_data$flag_mode_gps <- insert_value(values$gps_data$flag_mode_gps,
-                                               as.numeric(values$click_id_gps),
-                                               input$mode_select)
-     values$imu_data$flag_mode_imu <- insert_value(values$imu_data$flag_mode_imu,
-                                                  as.numeric(values$click_id_imu),
-                                                  input$mode_select)
+   observeEvent(input$mode_select, { # Setting Labels
+     if(!is.null(values$gps_data) & !is.null(values$imu_data)){
+       print("Before changes:")
+       print(values$gps_data$flag_mode_gps[as.numeric(values$click_id_gps) + -1:1])
+       values$gps_data$flag_mode_gps <- insert_value(values$gps_data$flag_mode_gps,
+                                                     as.numeric(values$click_id_gps),
+                                                     input$mode_select)
+       values$imu_data$flag_mode_imu <- insert_value(values$imu_data$flag_mode_imu,
+                                                     as.numeric(values$click_id_imu),
+                                                     input$mode_select)
+       print("After changes:")
+       print(values$gps_data$flag_mode_gps[as.numeric(values$click_id_gps) + -1:1])
+     }
    })
 
    observeEvent(input$remove, { # Remove rest button
@@ -376,7 +414,7 @@ server <- function(input, output) {
      },
      content = function(file) {
        stopifnot(all(values$imu_data$flag_mode_imu != "unk"))
-       write.csv(merge_sources(values$gps_data, values$imu_data), file, row.names = FALSE)
+       write.csv(merge_sources(gps = values$gps_data, imu = values$imu_data), file, row.names = FALSE)
      }
    )
 
