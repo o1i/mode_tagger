@@ -56,6 +56,10 @@ ui <- fluidPage(
                 accept=c('text/csv',
                          'text/comma-separated-values,text/plain',
                          '.csv')),
+      fileInput('flagfile', 'Choose Flags File',
+                accept=c('text/csv',
+                         'text/comma-separated-values,text/plain',
+                         '.csv')),
       fileInput('labelfile', 'Choose Labelled File (optional)',
                 accept=c('text/csv',
                          'text/comma-separated-values,text/plain',
@@ -120,7 +124,7 @@ server <- function(input, output) {
         arrange(ts) %>%
         select(-c(Date, Time))
       rownames(values$gps_data) <- values$gps_data$id
-      values$focus_time <- min(values$gps_data$ts, na.rm = TRUE)
+      values$time_focus <- min(values$gps_data$ts, na.rm = TRUE)
       values$time_window <- 60*5
       values$click_id_imu <- 1
       values$click_id_gps <- 1
@@ -142,10 +146,39 @@ server <- function(input, output) {
         arrange(ts) %>%
         select(-c(Date, Time))
       rownames(values$imu_data) <- values$imu_data$id
-      dt <- diff(values$imu_data$ts, units = "secs")
-      ind_isolated <- c(TRUE, dt > 5) & c(dt > 5, TRUE)
-      values$imu_data <- values$imu_data[!ind_isolated, ]
+
+      print("Starting isolation stuff")
+      breaks <- which(diff(values$imu_data$ts, units = "mins") > 10)
+      block_starts <- c(1, breaks + 1)
+      block_ends <- c(breaks, length(values$imu_data$ts))
+      short_block_inds <- as.numeric(values$imu_data$ts[block_ends] -
+                                       values$imu_data$ts[block_starts],
+                                     units = "mins") < 10
+
+      ind_isolated <- cbind(block_starts[short_block_inds], block_ends[short_block_inds]) %>%
+        apply(1, function(v) do.call(as.list(v), what = `:`)) %>%
+        unlist()
+      values$imu_data <- values$imu_data[-ind_isolated, ]
       print("IMU Data Loaded")
+    }
+  })
+
+  observeEvent(input$flagfile, { # Flagging Data
+    if(!is.null(input$flagfile)){
+      print("Loading Flagging Data")
+      values$flags_data <- read.csv(input$flagfile$datapath, header = T, sep = ",",
+                                  dec = ".", strip.white = TRUE,
+                                  stringsAsFactors = FALSE) %>%
+        mutate(Time = gsub("^([0-9]*:[0-9]*:[0-9]*):([0-9]*).*$", "\\1.\\2", paste0(Time, ":000")),
+               ts = as.POSIXct(paste(Date, Time), format = "%d/%m/%Y %H:%M:%OS")) %>%
+        arrange(ts) %>%
+        select(-c(Date, Time)) %>%
+        filter(Action == "Device event : User Event")
+      rownames(values$flags_data) <- values$flags_data$id
+
+      auto_flags <- c(FALSE, diff(values$flags_data$ts, units = "secs") < 22)
+      values$flags_data <- values$flags_data[!auto_flags, ]
+      print("Flagging Data Loaded")
     }
   })
 
@@ -164,11 +197,11 @@ server <- function(input, output) {
 
   observeEvent({ # Out dataset (plotted on map)
     values$time_window
-    values$focus_time
+    values$time_focus
     values$gps_data
   }, {
     values$out_data <- values$gps_data[
-      (values$focus_time + values$time_window * c(-1, 1)) %>%
+      (values$time_focus + values$time_window * c(-1, 1)) %>%
         findInterval(values$gps_data$ts) %>%
         `+`(c(-1, 1)) %>%
         pmax(1) %>%
@@ -205,8 +238,8 @@ server <- function(input, output) {
      axis(1, at = xlabels, labels = strftime(xlabels, format = "%H:%M", tz = "CET"))
      axis(2, at = 1:length(modes), labels = names(modes), las = 1, tick = FALSE)
 
-     rect(values$focus_time - values$time_window, -1,
-          values$focus_time + values$time_window, 100,
+     rect(values$time_focus - values$time_window, -1,
+          values$time_focus + values$time_window, 100,
           col = "#AAAAAA", border = NA)
      abline(v = range(values$out_data$ts))
 
@@ -216,6 +249,8 @@ server <- function(input, output) {
             col = mode_col_palette[as.numeric(factor(values$imu_data$flag_mode_imu[inds],
                                               levels = as.character(unlist(modes))))])
      abline(v = values$overview_hover_x)
+     tryCatch(abline(v = values$flags_data$ts, col = rgb(1, 0, 0, 0.7)),
+              error=function(e){})
    })
 
   output$map <- renderLeaflet({ # Map
@@ -255,11 +290,11 @@ server <- function(input, output) {
      par(mar = c(2.5, 8.1, 2.5, 2.1))
      imu_used <- subset(values$imu_data,
                         abs(as.numeric(values$imu_data$ts -
-                                         values$focus_time,
+                                         values$time_focus,
                                        units = "secs")) < values$time_window)
      imu_used <- imu_used[unique(floor(seq(1, nrow(imu_used), l = 2000))), ]
 
-     plot(NULL, xlim = range(imu_used$ts), ylim = c(200, 1800),
+     plot(NULL, xlim = as.numeric(values$time_focus) +c(-1, 1) * values$time_window, ylim = c(200, 1800),
           ylab = "", bty = "n", xaxt = 'n', yaxt = 'n', main = "Acceleration")
      xlabels <- seq(min(imu_used$ts), max(imu_used$ts), l = 4)
      axis(1, at = xlabels, labels = strftime(xlabels, format = "%H:%M:%S", tz = "CET"))
@@ -353,11 +388,11 @@ server <- function(input, output) {
    })
 
    observeEvent(input$shift_f, { # Move ahead button
-     values$focus_time <- values$focus_time + floor(values$time_window)
+     values$time_focus <- values$time_focus + floor(values$time_window)
    })
 
    observeEvent(input$shift_b, { # Move back button
-     values$focus_time <- values$focus_time - floor(values$time_window)
+     values$time_focus <- values$time_focus - floor(values$time_window)
    })
 
    observeEvent(input$zoom_in, { # Zoom In button
@@ -369,7 +404,7 @@ server <- function(input, output) {
    })
 
    observeEvent(input$center, { # Center button
-     values$focus_time <- values$imu_data[values$click_id_imu, "ts"]
+     values$time_focus <- values$imu_data[values$click_id_imu, "ts"]
    })
 
    observeEvent(input$mode_select, { # Setting Labels
@@ -393,7 +428,7 @@ server <- function(input, output) {
    })
 
    observeEvent(input$overview_click, { # Click in the overview plot: set focus
-     values$focus_time <- values$imu_data$ts[which.min((input$overview_click$x - as.numeric(values$imu_data$ts))^2)]
+     values$time_focus <- values$imu_data$ts[which.min((input$overview_click$x - as.numeric(values$imu_data$ts))^2)]
    })
 
    observeEvent(input$acc_overview_click, { # Click in the acc overview plot: set highlight
