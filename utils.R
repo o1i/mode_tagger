@@ -1,23 +1,34 @@
-add_one <- function(v){
-  # Not currently used
-  return(c(v, v[length(v)] + 1))
-}
-
 makelines <- function(mat, id){
+  # This functions takes a matrix of coordinates and makes it a Lines object
+  # Inputs:
+  # mat  a nx2 matrix with the coordinates
+  # id   a name for the Polyline (must be unique if you make multiple of these)
+  #
+  # Outputs:
+  # A Lines object
   Line(mat) %>%
     list() %>%
     Lines(ID = id)
 }
 
 mcpl <- function(map, lon, lat, col){
-  print(str(lon))
-  print(str(lat))
-  print(is.numeric(lat))
+  # Makes a Multi-Colored-Polyline with each segment having its own colour
+  #
+  # Inputs:
+  # map  A leaflet map
+  # lon  A vector with longitudes
+  # lat  A vector with latitudes
+  # col  A vector with colours (same length, last item will be ignored)
+  #
+  # Outputs:
+  # The input map with an added Polyline layer.
   stopifnot(is.numeric(lon),
             is.numeric(lat),
             length(lon) == length(lat),
             length(lon) == length(col))
 
+  # Assuming most points will be the same colours, there is one Polyline until
+  #   the colour changes
   inds <- c(0, as.factor(col) %>%
     as.numeric() %>%
     diff() %>%
@@ -34,6 +45,11 @@ mcpl <- function(map, lon, lat, col){
 
 get_point_colour <- function(df){
   # Gets the colors of the GPS points to be displayed
+  # Not really nice, as it assumes that the input dataframe contains a column
+  #   called flag_interpol
+  # Paints the points Blue and the interpolated values gray
+
+  # Returns a list with two vectors: c, the colours, a the alphas
   c <- c("#3333DD", "#999999")
   ind <- as.numeric(df$flag_interpol) * 2 + as.numeric(!df$flag_interpol)
 
@@ -43,7 +59,13 @@ get_point_colour <- function(df){
 
 get_line_colour <- function(v, cols){
   # gets colours based on modes of transport.
-  # Colors and modes are hard coded here
+  # Inputs:
+  # v      a vector with the name of the transport modes
+  # cols   a list whose name correspond to the transport modes and whose content
+  #        are the colours
+  #
+  # Outputts:
+  # The colours of the modes of transport in v
   return(as.character(unlist(cols[v])))
 }
 
@@ -68,6 +90,14 @@ insert_value <- function(v, ind, val){
   return(v_out)
 }
 
+# As timestamps are very large vectors but are sorted, finding the "closest"
+#   matches (L2) of one in the other is best not done in R but in RC++.
+# Inputs:
+# t1, t2: numeric vectors
+#
+# Outputs:
+# The indices (1-based, as in R) for every value in t2 of the closest point in
+#   t1.
 cppFunction('
             NumericVector match_inds(NumericVector t1, NumericVector t2){
               /*Find closest elements to elements of t2 in t1. Assume both are sorted ascendingly*/
@@ -97,6 +127,13 @@ cppFunction('
             ')
 
 merge_sources <- function(gps, imu){
+  # Merges the relevant info of GPS and IMU files into one for output (download)
+  #
+  # Inputs:
+  # The gps and imu files (stored in values$***_data)
+  #
+  # Output:
+  # The IMU file with added info from GPS. Values are filled down to avoid NAs.
   print("Merging sources")
   print(paste("GPS has", nrow(gps), "rows"))
   print(paste("IMU has", nrow(imu), "rows"))
@@ -138,6 +175,14 @@ merge_sources <- function(gps, imu){
 }
 
 read_gps <- function(filename){
+  # Reading in a GPS file
+  #
+  # Input:
+  # filename  A string pointing to the location of the file to be read
+  #
+  # Output:
+  # A data-frame. Timestaps are added, Longitudes and Latitudes are interpolated
+  #   if missing (with a flag)
   out <- read.csv(filename, header = T, sep = ",",
            dec = ".", strip.white = TRUE,
            stringsAsFactors = FALSE) %>%
@@ -164,6 +209,14 @@ read_gps <- function(filename){
 }
 
 read_imu <- function(filename){
+  # Reading in an IMU file
+  #
+  # Input:
+  # filename  A string pointing to the location of the file to be read
+  #
+  # Output:
+  # A data-frame. Timestaps are added. Isolated short sequences (of less than
+  #   10 minutes) are removed from the file.
   out <- read.csv(filename, header = T, sep = ",",
                   dec = ".", strip.white = TRUE,
                   stringsAsFactors = FALSE) %>%

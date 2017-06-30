@@ -3,6 +3,8 @@ title:
 account: oliver-burkhard
 server: shinyapps.io
 appId: 193418
-bundleId: 887737
+bundleId: 887995
 url: https://oliver-burkhard.shinyapps.io/17fs_movement_annotation_interface/
-when: 1498824754.50794
+when: 1498836135.8804
+asMultiple: FALSE
+asStatic: FALSE
