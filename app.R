@@ -65,11 +65,13 @@ ui <- fluidPage(
                          'text/comma-separated-values,text/plain',
                          '.csv')),
       hr(),
-      actionButton("shift_f", "Move Ahead"),
       actionButton("shift_b", "Move Back"),
+      actionButton("shift_f", "Move Ahead"),
+      br(),
       actionButton("zoom_in", "Zoom In"),
-      actionButton("zoom_out", "Zoom Out"),
       actionButton("center", "Center"),
+      actionButton("zoom_out", "Zoom Out"),
+      br(),
       actionButton("remove", "Remove rest"),
       hr(),
       selectInput(
@@ -96,34 +98,23 @@ ui <- fluidPage(
 # Define server logic required to draw a histogram
 server <- function(input, output) {
 
-  values <- reactiveValues()
+  dummy_gps <- read_gps("dummy_gps.csv")
+  dummy_imu <- read_imu("dummy_imu.csv")
+
+  values <- reactiveValues(
+    gps_data = dummy_gps,
+    imu_data = dummy_imu,
+    time_focus = min(dummy_imu$ts, na.rm = TRUE),
+    time_window = 60*5,
+    click_id_gps = min(as.numeric(dummy_gps$id)),
+    click_id_imu = min(as.numeric(dummy_imu$id))
+  )
 
   # --- Reading Data Events ----------------------------------------------------
   observeEvent(input$gpsfile, { # GPS Data
     if(!is.null(input$gpsfile)){
       print("Loading GPS Data")
-      values$gps_data <- read.csv(input$gpsfile$datapath, header = T, sep = ",",
-                           dec = ".", strip.white = TRUE,
-                           stringsAsFactors = FALSE) %>%
-        filter(Longitude != "Charging") %>%
-        mutate(Latitude = as.numeric(Latitude),
-               Longitude = as.numeric(Longitude),
-               flag_interpol = is.na(Longitude) | is.na(Latitude),
-               Latitude = approx(x = seq_along(Latitude),
-                                 y = Latitude,
-                                 xout = seq_along(Latitude),
-                                 rule = 2)$y,
-               Longitude = approx(x = seq_along(Longitude),
-                                  y = Longitude,
-                                  xout = seq_along(Longitude),
-                                  rule = 2)$y,
-               Time = gsub("^([0-9]*:[0-9]*:[0-9]*):([0-9]*).*$", "\\1.\\2", paste0(Time, ":000")),
-               ts = as.POSIXct(paste(Date, Time), format = "%d/%m/%Y %H:%M:%OS"),
-               id = as.character(row_number()),
-               flag_mode_gps = "unk") %>%
-        arrange(ts) %>%
-        select(-c(Date, Time))
-      rownames(values$gps_data) <- values$gps_data$id
+      values$gps_data <- read_gps(input$gpsfile$datapath)
       values$time_focus <- min(values$gps_data$ts, na.rm = TRUE)
       values$time_window <- 60*5
       values$click_id_gps <- min(as.numeric(values$gps_data$id))
@@ -134,30 +125,7 @@ server <- function(input, output) {
   observeEvent(input$imufile, { # IMU Data
     if(!is.null(input$imufile)){
       print("Loading IMU Data")
-      values$imu_data <- read.csv(input$imufile$datapath, header = T, sep = ",",
-                                  dec = ".", strip.white = TRUE,
-                                  stringsAsFactors = FALSE) %>%
-        mutate(Time = gsub("^([0-9]*:[0-9]*:[0-9]*):([0-9]*).*$", "\\1.\\2", paste0(Time, ":000")),
-               ts = as.POSIXct(paste(Date, Time), format = "%d/%m/%Y %H:%M:%OS"),
-               id = as.character(row_number()),
-               acc_tot = sqrt(Acc_X.mg.^2 + Acc_Y.mg.^2 + Acc_Z.mg.^2),
-               flag_mode_imu = "unk") %>%
-        arrange(ts) %>%
-        select(-c(Date, Time))
-      rownames(values$imu_data) <- values$imu_data$id
-
-      print("Starting isolation stuff")
-      breaks <- which(diff(values$imu_data$ts, units = "mins") > 10)
-      block_starts <- c(1, breaks + 1)
-      block_ends <- c(breaks, length(values$imu_data$ts))
-      short_block_inds <- as.numeric(values$imu_data$ts[block_ends] -
-                                       values$imu_data$ts[block_starts],
-                                     units = "mins") < 10
-
-      ind_isolated <- cbind(block_starts[short_block_inds], block_ends[short_block_inds]) %>%
-        apply(1, function(v) do.call(as.list(v), what = `:`)) %>%
-        unlist()
-      values$imu_data <- values$imu_data[-ind_isolated, ]
+      values$imu_data <- read_imu(input$imufile$datapath)
       values$time_focus <- min(values$imu_data$ts, na.rm = TRUE)
       values$time_window <- 60*5
       values$click_id_imu <- min(as.numeric(values$imu_data$id))

@@ -136,3 +136,62 @@ merge_sources <- function(gps, imu){
   imu[is.na(imu)] <- 0
   return(imu)
 }
+
+read_gps <- function(filename){
+  out <- read.csv(filename, header = T, sep = ",",
+           dec = ".", strip.white = TRUE,
+           stringsAsFactors = FALSE) %>%
+    filter(Longitude != "Charging") %>%
+    mutate(Latitude = as.numeric(Latitude),
+           Longitude = as.numeric(Longitude),
+           flag_interpol = is.na(Longitude) | is.na(Latitude),
+           Latitude = approx(x = seq_along(Latitude),
+                             y = Latitude,
+                             xout = seq_along(Latitude),
+                             rule = 2)$y,
+           Longitude = approx(x = seq_along(Longitude),
+                              y = Longitude,
+                              xout = seq_along(Longitude),
+                              rule = 2)$y,
+           Time = gsub("^([0-9]*:[0-9]*:[0-9]*):([0-9]*).*$", "\\1.\\2", paste0(Time, ":000")),
+           ts = as.POSIXct(paste(Date, Time), format = "%d/%m/%Y %H:%M:%OS"),
+           id = as.character(row_number()),
+           flag_mode_gps = "unk") %>%
+    arrange(ts) %>%
+    select(-c(Date, Time))
+  rownames(out) <- out$id
+  return(out)
+}
+
+read_imu <- function(filename){
+  out <- read.csv(filename, header = T, sep = ",",
+                  dec = ".", strip.white = TRUE,
+                  stringsAsFactors = FALSE) %>%
+    mutate(Time = gsub("^([0-9]*:[0-9]*:[0-9]*):([0-9]*).*$", "\\1.\\2", paste0(Time, ":000")),
+           ts = as.POSIXct(paste(Date, Time), format = "%d/%m/%Y %H:%M:%OS"),
+           id = as.character(row_number()),
+           acc_tot = sqrt(Acc_X.mg.^2 + Acc_Y.mg.^2 + Acc_Z.mg.^2),
+           flag_mode_imu = "unk") %>%
+    arrange(ts) %>%
+    select(-c(Date, Time))
+  rownames(out) <- out$id
+
+  print("Starting isolation stuff")
+  breaks <- which(diff(out$ts, units = "mins") > 10)
+  block_starts <- c(1, breaks + 1)
+  block_ends <- c(breaks, length(out$ts))
+  short_block_inds <- as.numeric(out$ts[block_ends] -
+                                   out$ts[block_starts],
+                                 units = "mins") < 10
+
+  ind_isolated <- cbind(block_starts[short_block_inds], block_ends[short_block_inds]) %>%
+    apply(1, function(v) do.call(as.list(v), what = `:`)) %>%
+    unlist()
+  print("End isolation stuff")
+  out <- out[-ind_isolated, ]
+  return(out)
+}
+
+
+
+
