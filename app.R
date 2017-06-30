@@ -126,8 +126,7 @@ server <- function(input, output) {
       rownames(values$gps_data) <- values$gps_data$id
       values$time_focus <- min(values$gps_data$ts, na.rm = TRUE)
       values$time_window <- 60*5
-      values$click_id_imu <- 1
-      values$click_id_gps <- 1
+      values$click_id_gps <- min(as.numeric(values$gps_data$id))
       print("GPS Data Loaded")
     }
   })
@@ -159,6 +158,9 @@ server <- function(input, output) {
         apply(1, function(v) do.call(as.list(v), what = `:`)) %>%
         unlist()
       values$imu_data <- values$imu_data[-ind_isolated, ]
+      values$time_focus <- min(values$imu_data$ts, na.rm = TRUE)
+      values$time_window <- 60*5
+      values$click_id_imu <- min(as.numeric(values$imu_data$id))
       print("IMU Data Loaded")
     }
   })
@@ -196,18 +198,18 @@ server <- function(input, output) {
   })
 
   observeEvent({ # Out dataset (plotted on map)
-    values$time_window
-    values$time_focus
-    values$gps_data
+    print("Make out dataset")
+    values$plot_range
   }, {
-    values$out_data <- values$gps_data[
-      (values$time_focus + values$time_window * c(-1, 1)) %>%
-        findInterval(values$gps_data$ts) %>%
-        `+`(c(-1, 1)) %>%
-        pmax(1) %>%
-        pmin(nrow(values$gps_data)) %>%
-        as.list() %>%
-        do.call(what = `:`), ]
+    inds <- tryCatch(values$plot_range %>%
+      findInterval(values$gps_data$ts) %>%
+      `+`(c(-2, 2)) %>%
+      pmax(1) %>%
+      pmin(nrow(values$gps_data)) %>%
+      as.list() %>%
+      do.call(what = `:`), error = function(e) 1:10)
+    values$out_data <- values$gps_data[inds, ]
+
   })
 
   observeEvent(values$out_data, { # Adjust GPS clicked time point if necessary
@@ -223,7 +225,7 @@ server <- function(input, output) {
   # --- Producing output -------------------------------------------------------
   output$overview <- renderPlot({ # Overall overview
      par(mar = c(2.5, 8.1, 1, 2.1))
-     inds <- seq(1, nrow(values$imu_data), by = 1000)
+     inds <- seq(1, nrow(values$imu_data), l = 1000)
      if(sum(values$imu_data$flag_mode_imu == "unk") < 20000){
        inds <- c(inds, which(values$imu_data$flag_mode_imu == "unk"))
      }
@@ -294,9 +296,9 @@ server <- function(input, output) {
                                        units = "secs")) < values$time_window)
      imu_used <- imu_used[unique(floor(seq(1, nrow(imu_used), l = 2000))), ]
 
-     plot(NULL, xlim = as.numeric(values$time_focus) +c(-1, 1) * values$time_window, ylim = c(200, 1800),
+     plot(NULL, xlim = values$plot_range, ylim = c(200, 1800),
           ylab = "", bty = "n", xaxt = 'n', yaxt = 'n', main = "Acceleration")
-     xlabels <- seq(min(imu_used$ts), max(imu_used$ts), l = 4)
+     xlabels <- seq(min(values$plot_range), max(values$plot_range), l = 4)
      axis(1, at = xlabels, labels = strftime(xlabels, format = "%H:%M:%S", tz = "CET"))
      lines(x = imu_used$ts,
            y = imu_used$acc_tot)
@@ -305,13 +307,15 @@ server <- function(input, output) {
             pch = 16, cex = 0.6, col = get_line_colour(imu_used$flag_mode_imu, mode_cols))
      abline(h = 1000)
      abline(v = values$imu_data[values$click_id_imu, "ts"])
+     tryCatch(abline(v = values$flags_data$ts, col = rgb(1, 0, 0)),
+              error=function(e){})
    })
 
    output$speed_overview <- renderPlot({ # Speed
      par(mar = c(2.5, 8.1, 2.5, 2.1))
-     plot(NULL, xlim = range(values$out_data$ts), ylim = range(0, 150),
+     plot(NULL, xlim = values$plot_range, ylim = range(0, 150),
           ylab = "", bty = "n", xaxt = 'n', yaxt = 'n', main = "Speed")
-     xlabels <- seq(min(values$out_data$ts), max(values$out_data$ts), l = 4)
+     xlabels <- seq(min(values$plot_range), max(values$plot_range), l = 4)
      axis(1, at = xlabels, labels = strftime(xlabels, format = "%H:%M:%S", tz = "CET"))
      axis(2, at = c(4.5, 30, 50, 80, 100), tick = F)
      abline(h = c(4.5, 30, 50, 80, 100), col = "#AAAAAA")
@@ -321,6 +325,8 @@ server <- function(input, output) {
            y = values$out_data$Speed,
            pch = 16, cex = 0.6, col = unlist(mode_cols[values$out_data$flag_mode_gps]))
      abline(v = values$imu_data[values$click_id_imu, "ts"])
+     tryCatch(abline(v = values$flags_data$ts, col = rgb(1, 0, 0)),
+              error=function(e){})
    })
 
 
@@ -377,6 +383,12 @@ server <- function(input, output) {
    })
 
 
+   observeEvent({values$time_focus  # Set window for plots
+                values$time_window
+                }, {
+     values$plot_range <- values$time_focus + c(-1, 1) * values$time_window
+  })
+
    observeEvent(input$map_marker_click, {  # Observer to show Popups on click
      click <- input$map_marker_click
      if (!is.null(click)) {
@@ -412,10 +424,10 @@ server <- function(input, output) {
        print("Before changes:")
        print(values$gps_data$flag_mode_gps[as.numeric(values$click_id_gps) + -1:1])
        values$gps_data$flag_mode_gps <- insert_value(values$gps_data$flag_mode_gps,
-                                                     as.numeric(values$click_id_gps),
+                                                     which(values$gps_data$id == values$click_id_gps),
                                                      input$mode_select)
        values$imu_data$flag_mode_imu <- insert_value(values$imu_data$flag_mode_imu,
-                                                     as.numeric(values$click_id_imu),
+                                                     which(values$imu_data$id == values$click_id_imu),
                                                      input$mode_select)
        print("After changes:")
        print(values$gps_data$flag_mode_gps[as.numeric(values$click_id_gps) + -1:1])
@@ -435,12 +447,14 @@ server <- function(input, output) {
      values$click_id_gps <- values$out_data$id[which.min((input$acc_overview_click$x - as.numeric(values$out_data$ts))^2)]
      values$click_id_imu <- values$imu_data[findInterval(input$acc_overview_click$x, values$imu_data$ts)[1], "id"]
      print(paste("Click ids IMU/GPS:", values$click_id_imu, values$click_id_gps))
+     print(paste("IMU/GPS times: ", values$imu_data$ts[values$click_id_imu], values$gps_data$ts[values$click_id_gps]))
    })
 
    observeEvent(input$speed_overview_click, { # Click in the speed overview plot: set highlight
      values$click_id_gps <- values$out_data$id[which.min((input$speed_overview_click$x - as.numeric(values$out_data$ts))^2)]
      values$click_id_imu <- values$imu_data[findInterval(input$speed_overview_click$x, values$imu_data$ts)[1], "id"]
      print(paste("Click ids IMU/GPS:", values$click_id_imu, values$click_id_gps))
+     print(paste("IMU/GPS times: ", values$imu_data[values$click_id_imu, "ts"], values$gps_data[values$click_id_gps, "ts"]))
    })
 
    output$download <- downloadHandler( # Download button
