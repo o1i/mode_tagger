@@ -196,7 +196,7 @@ server <- function(input, output) {
      if(sum(values$imu_data$flag_mode_imu == "unk") < 20000){
        inds <- c(inds, which(values$imu_data$flag_mode_imu == "unk"))
      }
-     plot(NULL, xlim = range(values$imu_data$ts), ylim = c(1, length(modes)),
+     plot(NULL, xlim = range(values$imu_data$ts) + c(-0.01, 0.01), ylim = c(1, length(modes)),
           ylab = "", bty = "n", xaxt = 'n', yaxt = 'n')
 
      # Red GPS-gap rectangles
@@ -255,7 +255,6 @@ server <- function(input, output) {
       addCircleMarkers(lng = values$out_data$Longitude[highlight_ind],
                        lat = values$out_data$Latitude[highlight_ind],
                        color = "#CC0000")
-
   })
 
    output$acc_overview <- renderPlot({ # Acceleration
@@ -267,7 +266,7 @@ server <- function(input, output) {
                                        units = "secs")) < values$time_window)
      imu_used <- imu_used[unique(floor(seq(1, nrow(imu_used), l = 2000))), ]
 
-     plot(NULL, xlim = values$plot_range, ylim = c(200, 1800),
+     plot(NULL, xlim = values$plot_range  + c(-0.01, 0.01), ylim = c(200, 1800),
           ylab = "", bty = "n", xaxt = 'n', yaxt = 'n', main = "Acceleration")
      xlabels <- seq(min(values$plot_range), max(values$plot_range), l = 4)
      axis(1, at = xlabels, labels = strftime(xlabels, format = "%H:%M:%S",
@@ -290,7 +289,7 @@ server <- function(input, output) {
 
    output$speed_overview <- renderPlot({ # Speed
      par(mar = c(2.5, 8.1, 2.5, 2.1))
-     plot(NULL, xlim = values$plot_range, ylim = range(0, 150),
+     plot(NULL, xlim = values$plot_range + c(-0.01, 0.01), ylim = range(0, 150),
           ylab = "", bty = "n", xaxt = 'n', yaxt = 'n', main = "Speed")
      xlabels <- seq(min(values$plot_range), max(values$plot_range), l = 4)
      axis(1, at = xlabels, labels = strftime(xlabels, format = "%H:%M:%S",

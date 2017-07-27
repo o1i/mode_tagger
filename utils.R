@@ -241,7 +241,7 @@ read_imu <- function(filename){
     apply(1, function(v) do.call(as.list(v), what = `:`)) %>%
     unlist()
   print("End isolation stuff")
-  out <- out[-ind_isolated, ]
+  if(length(ind_isolated) > 0) out <- out[-ind_isolated, ]
   return(out)
 }
 
