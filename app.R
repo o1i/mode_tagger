@@ -478,6 +478,7 @@ server <- function(input, output) {
        stopifnot(all(values$imu_data$flag_mode_imu != "unk"))
        write.csv(merge_sources(gps = values$gps_data, imu = values$imu_data),
                  file, row.names = FALSE)
+       print("Wrote File.")
      }
    )
 
