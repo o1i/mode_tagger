@@ -23,8 +23,6 @@ modes <- list("Unknown" = "unk",
               "Bus" = "bus",
               "Tram" = "tram",
               "Train" = "train",
-              "Motorbike" = "moto",
-              "Ship" = "ship",
               "Transfer" = "trans",
               "Other" = "other",
               "Remove" = "rm")
@@ -33,6 +31,9 @@ modes <- list("Unknown" = "unk",
 mode_col_palette <- c("#777777", brewer.pal(8, "Dark2"),
                       "#f03b20", "#7a0177", "#08519c", "#FF0000")
 mode_cols <- setNames(as.list(mode_col_palette), as.character(unlist(modes)))
+mode_to_number <- 1:length(modes) %>%
+  setNames(as.character(unlist(modes)))
+
 
 # --- UI side of the shiny app -------------------------------------------------
 ui <- fluidPage(
@@ -476,6 +477,8 @@ server <- function(input, output) {
      },
      content = function(file) {
        stopifnot(all(values$imu_data$flag_mode_imu != "unk"))
+       values$imu_data$flag_mode_imu <-
+         as.numeric(mode_to_number[values$imu_data$flag_mode_imu])
        write.csv(merge_sources(gps = values$gps_data, imu = values$imu_data),
                  file, row.names = FALSE)
        print("Wrote File.")
